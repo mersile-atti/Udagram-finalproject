@@ -107,3 +107,298 @@ Resources:
             Tags: 
                 - Key: Name 
                   Value: !Sub ${EnvironmentName} Private Subnet (AZ2)
+    
+    NatGateway1EIP:
+        Type: AWS::EC2::EIP
+        DependsOn: AttachInternetGateway
+        Properties: 
+            Domain: VPC
+
+    NatGateway2EIP:
+        Type: AWS::EC2::EIP
+        DependsOn: AttachInternetGateway
+        Properties:
+            Domain: VPC
+
+    NatGateway1: 
+        Type: AWS::EC2::NatGateway
+        Properties: 
+            AllocationId: !GetAtt NatGateway1EIP.AllocationId
+            SubnetId: !Ref PublicSubnet1
+
+    NatGateway2: 
+        Type: AWS::EC2::NatGateway
+        Properties:
+            AllocationId: !GetAtt NatGateway2EIP.AllocationId
+            SubnetId: !Ref PublicSubnet2
+
+    PublicRouteTable:
+        Type: AWS::EC2::RouteTable
+        Properties: 
+            VpcId: !Ref VPC
+            Tags: 
+                - Key: Name 
+                  Value: !Sub ${EnvironmentName} Public Routes
+
+    DefaultPublicRoute: 
+        Type: AWS::EC2::Route
+        DependsOn: AttachInternetGateway
+        Properties: 
+            RouteTableId: !Ref PublicRouteTable
+            DestinationCidrBlock: 0.0.0.0/0
+            GatewayId: !Ref InternetGW
+
+    PublicSubnet1RouteTableAssociation:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+            RouteTableId: !Ref PublicRouteTable
+            SubnetId: !Ref PublicSubnet1
+
+    PublicSubnet2RouteTableAssociation:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+            RouteTableId: !Ref PublicRouteTable
+            SubnetId: !Ref PublicSubnet2
+    
+    PrivateRouteTable1:
+        Type: AWS::EC2::RouteTable
+        Properties: 
+            VpcId: !Ref VPC
+            Tags: 
+                - Key: Name 
+                  Value: !Sub ${EnvironmentName} Private Routes (AZ1)
+
+    DefaultPrivateRoute1:
+        Type: AWS::EC2::Route
+        Properties:
+            RouteTableId: !Ref PrivateRouteTable1
+            DestinationCidrBlock: 0.0.0.0/0
+            NatGatewayId: !Ref NatGateway1
+
+    PrivateSubnet1RouteTableAssociation:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+            RouteTableId: !Ref PrivateRouteTable1
+            SubnetId: !Ref PrivateSubnet1
+
+    PrivateRouteTable2:
+        Type: AWS::EC2::RouteTable
+        Properties: 
+            VpcId: !Ref VPC
+            Tags: 
+                - Key: Name 
+                  Value: !Sub ${EnvironmentName} Private Routes (AZ2)
+
+    DefaultPrivateRoute2:
+        Type: AWS::EC2::Route
+        Properties:
+            RouteTableId: !Ref PrivateRouteTable2
+            DestinationCidrBlock: 0.0.0.0/0
+            NatGatewayId: !Ref NatGateway2
+
+    PrivateSubnet2RouteTableAssociation:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+            RouteTableId: !Ref PrivateRouteTable2
+            SubnetId: !Ref PrivateSubnet2
+
+    BastionSG:
+        Type: AWS::EC2::SecurityGroup
+        Properties: 
+            GroupDescription: Security Group for Bastion Host to allow SSH
+            SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 22
+                ToPort: 22
+                CidrIp: 0.0.0.0/0
+            Tags:
+              - Key: Name 
+                Value: Bastion-SG
+            VpcId: !Ref VPC
+
+    LBSecGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Security Group for Application Load Balancer to expose HTTP 80
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+            SecurityGroupEgress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+
+    WebServerSecGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Allow http to our hosts and SSH from local only
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+
+    EC2SG:
+      Type: AWS::EC2::SecurityGroup
+      Properties: 
+        GroupDescription: Security Group for EC2 to allow SSH from Bastion and expose HTTP 80
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            SourceSecurityGroupId: !Ref BastionSG
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            SourceSecurityGroupId: !Ref LBSecGroup
+        Tags:
+          - Key: Name 
+            Value: EC2-SG
+        VpcId: !Ref VPC
+    
+    BastionHost:
+      Type: AWS::EC2::Instance
+      Properties: 
+        BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+        ImageId: ami-052efd3df9dad4825
+        InstanceType: t2.micro
+        KeyName: finalproject
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: "true"
+            DeviceIndex: "0"
+            SubnetId:
+              Fn::ImportValue: 
+                !Sub "${EnvironmentName}-PUB1-SN"
+            GroupSet: 
+              - !Ref BastionSG
+        Tags: 
+          - Key: Name 
+            Value: Bastion Host
+    
+    WebAppLaunchConfig:
+        Type: AWS::AutoScaling::LaunchConfiguration
+        Properties:
+            UserData:
+              Fn::Base64: !Sub |
+                #!/bin/bash
+                apt-get update -y
+                apt-get install apache2 -y
+                systemctl start apache2.service
+                cd /var/www/html
+                echo "it works! Udagram, Udacity!" > index.html        
+            ImageId: ami-052efd3df9dad4825
+            SecurityGroups:
+              - Ref: WebServerSecGroup
+            InstanceType: t2.micro
+            BlockDeviceMappings:
+            - DeviceName: "/dev/sdk"
+              Ebs:
+                VolumeSize: '10'
+    
+    WebAppGroup:
+      Type: AWS::AutoScaling::AutoScalingGroup
+      Properties:
+        VPCZoneIdentifier:
+        - Fn::ImportValue: 
+            !Sub "${EnvironmentName}-PRIV-NETS"
+        LaunchConfigurationName:
+          Ref: WebAppLaunchConfig
+        MinSize: '2'
+        MaxSize: '4'
+        TargetGroupARNs:
+        - Ref: WebAppTargetGroup
+
+    WebAppLB:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Scheme: internet-facing
+        Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+        SecurityGroups:
+        - Ref: LBSecGroup
+        Type: application
+    
+    Listener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      Properties:
+        DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebAppTargetGroup
+        LoadBalancerArn: !Ref WebAppLB
+        Port: '80'
+        Protocol: HTTP
+
+    ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebAppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+    WebAppTargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckIntervalSeconds: 30
+        HealthCheckPath: /
+        HealthCheckProtocol: HTTP
+        HealthCheckTimeoutSeconds: 8
+        HealthyThresholdCount: 2
+        Port: 80
+        Protocol: HTTP
+        UnhealthyThresholdCount: 5
+        VpcId: !Ref VPC
+        
+    
+
+
+Outputs: 
+
+    PublicSubnets:
+        Description: A list of the public subnets
+        Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]]
+        Export:
+          Name: !Sub ${EnvironmentName}-PUB-NETS
+
+    PrivateSubnets:
+        Description: A list of the private subnets
+        Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]]
+        Export:
+          Name: !Sub ${EnvironmentName}-PRIV-NETS
+
+    PublicSubnet1:
+        Description: A reference to the public subnet in the 1st Availability Zone
+        Value: !Ref PublicSubnet1
+        Export:
+          Name: !Sub ${EnvironmentName}-PUB1-SN
+
+    PublicSubnet2: 
+        Description: A reference to the public subnet in the 2nd Availability Zone
+        Value: !Ref PublicSubnet2
+        Export:
+          Name: !Sub ${EnvironmentName}-PUB2-SN
+
+    PrivateSubnet1:
+        Description: A reference to the private subnet in the 1st Availability Zone
+        Value: !Ref PrivateSubnet1
+        Export:
+          Name: !Sub ${EnvironmentName}-PRI1-SN
+
+    PrivateSubnet2: 
+        Description: A reference to the private subnet in the 2nd Availability Zone
+        Value: !Ref PrivateSubnet2
+        Export:
+          Name: !Sub ${EnvironmentName}-PRI2-SN
