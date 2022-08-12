@@ -1,0 +1,45 @@
+Description: >
+    OUMAR MERSILE / udacityProject
+    This template will deploy a VPC which contains two public subnets (using an Internet Gateway)
+    and two private subnets. There are our servers, two located in each of your private subnets in different Availability Zones (HA).
+    Also an additional EC2 is created in a public subnet (public IP) to make this EC2 reachable from the internet. This EC2 will serve as bastion host. 
+    It is possible to ```SSH``` inside the bastion host and connect from there to the private EC2 instances
+    which are hosting the basic website. 
+
+Parameters:
+  # Paramenters are entirely optional.
+  # but using them will make your cloudformation templates more reusable
+  # use them for things that may change over time, such as instance type,
+  # VPCs and so on.
+    EnvironmentName:
+        Description: An environment name that will be prefixed to resource names
+        Type: String
+ 
+    VpcCIDR: 
+        Description: Please enter the IP range (CIDR notation) for this VPC
+        Type: String
+        Default: 10.0.0.0/16
+    
+
+Resources: 
+    VPC:
+        Type: AWS::EC2::VPC
+        Properties: 
+            CidrBlock: !Ref VpcCIDR
+            EnableDnsHostnames: true
+            Tags: 
+                - Key: Name
+                  Value: !Ref EnvironmentName
+
+    InternetGW:
+        Type: AWS::EC2::InternetGateway
+        Properties:
+            Tags:
+                - Key: Name
+                  Value: !Ref EnvironmentName
+
+    AttachInternetGateway:
+        Type: AWS::EC2::VPCGatewayAttachment
+        Properties:
+            InternetGatewayId: !Ref InternetGW
+            VpcId: !Ref VPC
