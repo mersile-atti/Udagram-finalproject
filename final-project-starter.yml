@@ -402,3 +402,15 @@ Outputs:
         Value: !Ref PrivateSubnet2
         Export:
           Name: !Sub ${EnvironmentName}-PRI2-SN
+
+    LoadBalancer:
+        Description: A reference to the Application Load Balancer
+        Value: !Ref WebAppLB
+
+    LoadBalancerUrl:
+        Description: The URL of the ALB
+        Value: !GetAtt WebAppLB.DNSName
+
+    Listener:
+        Description: A reference to a port 80 listener
+        Value: !Ref Listener
