@@ -1,0 +1,231 @@
+Description: >
+    OUMAR MERSILE / UdacityProject
+
+Parameters:
+    EnvironmentName:
+        Description: An environment name that will be prefixed to resource names
+        Type: String
+ 
+    
+
+Resources: 
+
+    RoleForSSMAccess: 
+        Type: "AWS::IAM::Role"
+        Properties: 
+          AssumeRolePolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Principal: 
+                  Service: 
+                    - "ec2.amazonaws.com"
+                Action: 
+                  - "sts:AssumeRole"
+          Path: "/"
+    
+    RolePolicies: 
+      Type: "AWS::IAM::Policy"
+      Properties: 
+        PolicyName: "root"
+        PolicyDocument: 
+          Version: "2012-10-17"
+          Statement: 
+            - Effect: "Allow"
+              Action: "*"
+              Resource: "*"
+        Roles: 
+          - !Ref RoleForSSMAccess
+    
+    ServerInstanceProfile: 
+      Type: "AWS::IAM::InstanceProfile"
+      Properties: 
+        Path: "/"
+        Roles: 
+          - !Ref RoleForSSMAccess
+    
+    BastionSG:
+        Type: AWS::EC2::SecurityGroup
+        Properties: 
+            GroupDescription: Security Group for Bastion Host to allow SSH
+            SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 22
+                ToPort: 22
+                CidrIp: 0.0.0.0/0
+            Tags:
+              - Key: Name 
+                Value: Bastion-SG
+            VpcId:
+              Fn::ImportValue:
+                !Sub "${EnvironmentName}-VPCID"
+
+    LBSecGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Security Group for Application Load Balancer to expose HTTP 80
+            VpcId:
+              Fn::ImportValue:
+                !Sub "${EnvironmentName}-VPCID"
+            SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+            SecurityGroupEgress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+
+    WebServerSecGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Allow http to our hosts and SSH from local only
+            VpcId:
+              Fn::ImportValue:
+                !Sub "${EnvironmentName}-VPCID"
+            SecurityGroupIngress:
+              - IpProtocol: tcp
+                FromPort: 80
+                ToPort: 80
+                CidrIp: 0.0.0.0/0
+
+    EC2SG:
+      Type: AWS::EC2::SecurityGroup
+      Properties: 
+        GroupDescription: Security Group for EC2 to allow SSH from Bastion and expose HTTP 80
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            SourceSecurityGroupId: !Ref BastionSG
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            SourceSecurityGroupId: !Ref LBSecGroup
+        Tags:
+          - Key: Name 
+            Value: EC2-SG
+        VpcId:
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-VPCID"
+    
+    BastionHost:
+      Type: AWS::EC2::Instance
+      Properties: 
+        BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+        ImageId: ami-052efd3df9dad4825
+        InstanceType: t2.micro
+        KeyName: finalproject
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: "true"
+            DeviceIndex: "0"
+            SubnetId:
+              Fn::ImportValue: 
+                !Sub "${EnvironmentName}-PUB1-SN"
+            GroupSet: 
+              - !Ref BastionSG
+        Tags: 
+          - Key: Name 
+            Value: Bastion Host
+    
+    WebAppLaunchConfig:
+        Type: AWS::AutoScaling::LaunchConfiguration
+        Properties:
+            UserData:
+              Fn::Base64: !Sub |
+                #!/bin/bash
+                apt-get update -y
+                apt-get install unzip awscli -y
+                apt-get install apache2 -y
+                systemctl start apache2.service
+                cd /var/www/html
+                aws s3 cp s3://myudagramfinalproject/index.html .
+            IamInstanceProfile: !Ref ServerInstanceProfile
+            ImageId: ami-052efd3df9dad4825
+            SecurityGroups:
+              - Ref: WebServerSecGroup
+            InstanceType: t2.micro
+            BlockDeviceMappings:
+            - DeviceName: "/dev/sdk"
+              Ebs:
+                VolumeSize: '10'
+    
+    WebAppGroup:
+      Type: AWS::AutoScaling::AutoScalingGroup
+      Properties:
+        VPCZoneIdentifier:
+        - Fn::ImportValue: 
+            !Sub "${EnvironmentName}-PRIV-NETS"
+        LaunchConfigurationName:
+          Ref: WebAppLaunchConfig
+        MinSize: '2'
+        MaxSize: '4'
+        TargetGroupARNs:
+        - Ref: WebAppTargetGroup
+
+    WebAppLB:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Scheme: internet-facing
+        Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+        SecurityGroups:
+        - Ref: LBSecGroup
+        Type: application
+    
+    Listener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      Properties:
+        DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebAppTargetGroup
+        LoadBalancerArn: !Ref WebAppLB
+        Port: '80'
+        Protocol: HTTP
+
+    ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebAppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+    WebAppTargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckIntervalSeconds: 30
+        HealthCheckPath: /
+        HealthCheckProtocol: HTTP
+        HealthCheckTimeoutSeconds: 8
+        HealthyThresholdCount: 2
+        Port: 80
+        Protocol: HTTP
+        UnhealthyThresholdCount: 5
+        VpcId:
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-VPCID"
+    
+Outputs: 
+
+    LoadBalancerUrl:
+        Description: The URL of the ALB
+        Value:
+          !Sub
+            - 'http://${DNSName}'
+            - {DNSName: !GetAtt 'WebAppLB.DNSName'}
+        Export:
+          Name: !Sub "${EnvironmentName}-SiteURL"
+    
+
